@@ -1,5 +1,6 @@
 from keras.models import Sequential
 from keras.layers import Dense
+from sklearn.cross_validation import train_test_split
 import numpy as np
 
 # init seed
@@ -22,8 +23,13 @@ model.add( Dense( 1, init = 'uniform', activation = 'sigmoid' ) )
 # compile model
 model.compile( loss = 'binary_crossentropy', optimizer = 'adam', metrics=['accuracy'] )
 
-# fit
-model.fit( X, Y, nb_epoch = 150, batch_size = 10 )
+# fit with auto validation
+#model.fit( X, Y, validation_split=0.33, nb_epoch = 150, batch_size = 10 )
+
+# fit with manual validation
+X_train, X_test, Y_train, Y_test = train_test_split( X, Y, test_size=0.33, random_state=seed)
+model.fit( X_train, Y_train, validation_data=(X_test, Y_test), nb_epoch = 150, batch_size = 10 )
+
 
 # evaluate
 scores = model.evaluate( X, Y )
