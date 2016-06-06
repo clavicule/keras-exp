@@ -1,5 +1,6 @@
 import argparse
 import numpy as np
+import os.path
 # from progressbar import ProgressBar
 from keras.models import Sequential
 from keras.layers import LSTM, Dense
@@ -8,12 +9,17 @@ from scipy.ndimage.interpolation import shift
 from sklearn.preprocessing import StandardScaler
 
 
-def baseline_model(batch_size, timesteps, data_dim):
+def baseline_model(batch_size, timesteps, data_dim, weight_file=''):
     m = Sequential()
     m.add(LSTM(30, input_shape=(timesteps, data_dim), return_sequences=False))  # consume_less='gpu'
     # m.add(LSTM(30, return_sequences=False))
     # m.add(LSTM(30, return_sequences=False))
     m.add(Dense(1, input_dim=30))
+
+    if os.path.isfile(weight_file):
+        print('loading weights')
+        model.load_weights(weight_file)
+
     m.compile(loss='mse', optimizer='adam')
     return m
 
@@ -42,6 +48,7 @@ def load_data(X, Y, sequence_size, time_length, step):
 ap = argparse.ArgumentParser()
 ap.add_argument("-t", "--training", required=True, help="Path to the training data file")
 ap.add_argument("-v", "--validating", required=True, help="Path to the validating data file")
+ap.add_argument("-o", "--output", required=True, help="Path to the validating data file")
 args = vars(ap.parse_args())
 
 print('loading training data...')
@@ -53,7 +60,7 @@ Y_train = train_dataset[:, train_end].astype(float)
 print('scaling data')
 ss = StandardScaler()
 ss.fit(X_train)
-X_train = ss.transform(X_train)
+X_train_normed = ss.transform(X_train)
 
 # Reshape  dimensions of input and output to match  LSTM requirements
 # Input:(nb_samples, timesteps, input_dim).
@@ -63,13 +70,14 @@ X_train = ss.transform(X_train)
 # output ==> ( xx, 1 )
 
 print('format training data')
-X, Y = load_data(X_train, Y_train, sequence_size=3024, time_length=24, step=10)
+X, Y = load_data(X_train_normed, Y_train, sequence_size=3024, time_length=24, step=10)
 print(X.shape)
 print(Y.shape)
 
 batch_size = 300
 timestep=24
 step=10
+prediction_timestep = 1296
 
 print('preparing initial data for validation')
 nb_district = 66
@@ -79,26 +87,36 @@ init_input = np.zeros((nb_district, timestep), dtype='float')
 for d in range(nb_district):
     init_input[d] = X_train[(d+1)*sample_by_district-timestep:(d+1)*sample_by_district,1]
 
+print('loading validation data...')
+val_dataset = np.loadtxt(args['validating'], delimiter=',')
+val_end = val_dataset.shape[1] - 1
+XY_val = np.zeros((nb_district, prediction_timestep, 2), dtype='float')
+for d in range(nb_district):
+    XY_val[d] = val_dataset[d*prediction_timestep:(d+1)*prediction_timestep, [val_end-1, val_end]].astype(float)
+
 print('building RNN')
 checkpoint = ModelCheckpoint("output/rnn.hdf5", verbose=1, save_best_only=True, monitor='val_loss')
 callbacks_list = [checkpoint]
 model = baseline_model(batch_size=batch_size, timesteps=timestep, data_dim=2)
 
 print('training RNN')
-model.fit(x=X, y=Y, validation_split=0.2, nb_epoch=3, batch_size=batch_size, callbacks=callbacks_list)
+model.fit(x=X, y=Y, validation_split=0.2, nb_epoch=10, batch_size=batch_size, callbacks=callbacks_list)
+
+model = baseline_model(batch_size=batch_size, timesteps=timestep, data_dim=2, weight_file='output/rnn.hdf5')
 
 print('predicting data')
-val_prediction = np.zeros((nb_district,1440), dtype='float')
-# pbar = ProgressBar(maxval=nb_district*1440).start()
+val_prediction = np.zeros((nb_district,prediction_timestep), dtype='float')
+# pbar = ProgressBar(maxval=nb_district*prediction_timestep).start()
 progress=1
 for d in range(nb_district):
-    print('district {}'.format(d))
-    for t in range(1440):
+    print('district {}'.format(d + 1))
+    for t in range(prediction_timestep):
         if t % 300 == 0:
             print('time {}'.format(t))
         input = np.zeros((1, timestep, 2), dtype='float')
-        input[0, :, 0] = d
+        input[0, :, 0] = d + 1
         input[0, :, 1] = init_input[d]
+        input[0] = ss.transform(input[0])
         output = model.predict(input)
         val_prediction[d][t] = output
         init_input = shift(init_input, -1, cval=output)
@@ -107,25 +125,19 @@ for d in range(nb_district):
 # pbar.finish()
 print('val prediction shape = {}'.format(val_prediction.shape))
 
-print('loading validation data...')
-val_dataset = np.loadtxt(args['validating'], delimiter=',')
-val_end = val_dataset.shape[1] - 1
-XY_val = np.zeros((nb_district, 1440, 2), dtype='float')
-for d in range(nb_district):
-    XY_val[d] = val_dataset[d*1440:(d+1)*1440, [val_end-1, val_end]].astype(float)
-
 print('calculating mape')
 mape=0
 counter = 0
-# pbar = ProgressBar(widgets=[SimpleProgress()], maxval=nb_district*1440).start()
+# pbar = ProgressBar(widgets=[SimpleProgress()], maxval=nb_district*prediction_timestep).start()
+output = open(args['output'], 'w')
 for d in range(nb_district):
-    print('district {}'.format(d))
-    for t in range(1440):
-        if t % 300 == 0:
-            print('time {}'.format(t))
+    for t in range(prediction_timestep):
+        output.write(str(d+1) + ',' + '2016-01-' + str(22 + t // 144) + '-' + str(t % 144) + ',' +
+                     str(val_prediction[d][t]) + '\n')
         if XY_val[d][t][0] != 0. and XY_val[d][t][1] != 0:
             mape += abs(XY_val[d][t][0] - val_prediction[d][t]) / XY_val[d][t][0]
             counter += 1
             # pbar.update(counter)
 # pbar.finish()
+output.close()
 print('MAPE = {}'.format(mape/counter))
