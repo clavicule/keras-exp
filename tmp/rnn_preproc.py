@@ -3,7 +3,7 @@ from datetime import datetime
 import numpy as np
 from progress.bar import Bar
 
-# timeslot indexing funtion
+# timeslot indexing function
 def get_time_index(timestamp):
     day = int(timestamp.date().day)
     slot = int((timestamp.time().hour * 3600 + timestamp.time().minute * 60 + timestamp.time().second) / 600)
@@ -14,6 +14,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument("-d", "--district", required=True, help="Path to the district ID file")
 ap.add_argument("-o", "--order", required=True, help="Path to the order input data file")
 ap.add_argument("-ov", "--order_val", required=True, help="Path to the order validating data file")
+ap.add_argument("-p", "--poi", required=True, help="Path to the POI file")
+# ap.add_argument("-po", "--poi_output", required=True, help="Path to the POI file")
 ap.add_argument("-t", "--training", help="Path to the output training file")
 ap.add_argument("-v", "--validating", help="Path to the output validating file")
 args = vars(ap.parse_args())
@@ -27,9 +29,39 @@ for line in district_file:
     district = district_id.pop(0)
     district_mapping[district] = int(district_id[0].strip()) - 1
 district_file.close()
+no_district = len(district_mapping)
+
+# pre-process POI data
+# find out count of levels1+level2 combinations
+print('reading POI...')
+poi_mapping = {}
+tmp_poi_data = {}
+poi_file = open(args['poi'], 'r')
+for line in poi_file:
+    poi = line.split('\t')
+    district = poi.pop(0)
+    tmp_poi_data[district] = poi
+    for p in poi:
+        data = p.split(':')
+        if len(data) != 2:
+            continue
+
+        data = data[0].strip()
+        if data not in poi_mapping:
+            poi_mapping[data] = len(poi_mapping)
+poi_file.close()
+
+poi_data = np.zeros((no_district, len(poi_mapping)), dtype='float')
+for k, v in tmp_poi_data.items():
+    for p in v:
+        data = p.split(':')
+        poi_data[district_mapping[k]][poi_mapping[data[0]]] = int(data[1].strip())
+del tmp_poi_data
+
+# np.savetxt(args['poi_output'], poi_data, delimiter=',')
+# del poi_data
 
 total_timeslots = 31 * 144
-no_district = len(district_mapping)
 print('total number of district: {}'.format(no_district))
 # data hold per timestep per district --> destination district count, price, gap
 init_dataset = np.zeros((total_timeslots, no_district, no_district + 2), dtype="float")
@@ -84,7 +116,9 @@ for j in range(train_dataset.shape[1]):
     for i in range(train_dataset.shape[0]):
         no_order = 0
         gap = train_dataset[i][j][no_district + 1]
-        training_file.write(str(j+1) + ',')
+        training_file.write(str(j + 1) + ',')
+        for p in range(len(poi_mapping)):
+            training_file.write(str(poi_data[j][p]) + ',')
         for k in range(no_district):
             bar.next()
             no_order += train_dataset[i][j][k]
@@ -106,6 +140,8 @@ for j in range(val_dataset.shape[1]):
         no_order = 0
         gap = val_dataset[i][j][no_district + 1]
         val_file.write(str(j + 1) + ',')
+        for p in range(len(poi_mapping)):
+            val_file.write(str(poi_data[j][p]) + ',')
         for k in range(no_district):
             bar.next()
             no_order += val_dataset[i][j][k]
